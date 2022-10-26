@@ -1,0 +1,17 @@
+SAMPLE_ID	ATMOSPHERE	CRS	GROUP	QCWELL	TEST
+Sample.Aerobic.005.A01	aerobic	none	group_5	A01	aerobic
+Sample.Aerobic.005.A02	aerobic	none	group_5	A02	aerobic
+Sample.Aerobic.005.A03	aerobic	none	group_5	A03	aerobic
+Sample.Aerobic.006.A01	aerobic	none	group_6	A01	aerobic
+Sample.Aerobic.006.A02	aerobic	none	group_6	A02	aerobic
+Sample.Anaerobic	anaerobic	unknown	unknown	unknown	anaerobic
+Sample.Anaerobic.006.A03	anaerobic	none	group_6	A03	anaerobic
+Sample.Anaerobic.006.A04	anaerobic	none	group_6	A04	anaerobic
+Sample.Anaerobic.006.A05	anaerobic	none	group_6	A05	anaerobic
+Sample.Anaerobic.006.A06	anaerobic	none	group_6	A06	anaerobic
+Sample.Anaerobic.006.A07	anaerobic	none	group_6	A07	anaerobic
+Sample.Anaerobic.CRS.005.A07	anaerobic	CRS	group_5	A07	anaerobic_CRS
+Sample.Anaerobic.CRS.005.A08	anaerobic	CRS	group_5	A08	anaerobic_CRS
+Sample.Anaerobic.CRS.005.A09	anaerobic	CRS	group_5	A09	anaerobic_CRS
+Sample.Anaerobic.CRS.006.A08	anaerobic	CRS	group_6	A08	anaerobic_CRS
+Sample.Anaerobic.CRS.006.A09	anaerobic	CRS	group_6	A09	anaerobic_CRS

@@ -1,0 +1,757 @@
+---
+title: "DESeq2 analysis anaerobic vs aerobic"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    theme: flatly
+    toc: yes
+    toc_float: yes
+    Author: Talia Wiggen and Sabrina Arif
+
+---
+
+The following DESeq analysis uses lessons from https://github.com/hbctraining/DGE_workshop. Here we will be examining the differential expression of CALU-3 cell genes comparing anaerobic environment to aerobic environment.
+
+# Setup
+```{r, results='hide'}
+### Bioconductor Github and CRAN libraries used
+library(tidyverse)
+library(RColorBrewer)
+library(DESeq2)
+library(pheatmap)
+library(DEGreport)
+library(ggpubr)
+library(ggrepel)
+library(wesanderson)
+library(cowplot)
+```
+```{r}
+theme_set(theme_bw())
+```
+
+# Load in data
+subread.txt was produces by MSI using the following conditions (copied from the rna-seq report.html provided by UMGC/MSI:
+
+>"The RNA-Seq dataset was analyzed using the reference Human (Homo_sapiens) genome assembly “GRCh38” using annotation from Ensembl release 98. The Ensembl GTF annotation file was filtered to remove annotations for non-protein-coding features. Fastq files were evenly subsampled down to a maximum of 100,000 reads per sample. Quality of data in fastq files was assessed with FastQC. A Hisat2 splicesite file was generated from the GTF file. Hisat2 was used to align reads to a reference genome using the options ‘–dta-cufflinks –rna-strandness RF –known-splicesite-infile /panfs/roc/umgc/tmp/scratch/200226_A00223_0330_BH2WT2DSXY/demultiplex_20200302-13-02-18/Hunter_Project_027/rnaseq/splicesites.txt -x /panfs/roc/groups/3/umii/public/ensembl/Homo_sapiens/GRCh38/hisat2//genome’. Ribosomal content was determined by aligning the first 10,000 R1 reads to the Silva ribosomal database and reporting the percent of reads with alignment. Gene-level raw read counts were generated using featureCounts from the Subread R package using the options ‘-s 2 -B -p -Q 10’. Insert sizes were summarized with Picard."
+
+The metadata file was made to include two columns of interest.   
+1) ATMOSPHERE with two levels: Anaerobic and Aerobic, and   
+2) TEST which contains the major experimental groups of this analysis.  
+```{r}
+## Load in data
+data <- read.table("../data/subread.txt", header=T, row.names=1) 
+meta <- read.table("../data/metadata.txt", header=T, row.names=1)
+```
+
+```{r}
+# Check that the row names of the metadata equal the column names of the **raw counts** data
+all(colnames(data) == rownames(meta))
+```
+
+
+# Create deseq obect
+We are using a simple design ~ TEST here.
+```{r}
+# Create DESeq2Dataset object
+dds <- DESeqDataSetFromMatrix(countData = data, colData = meta, design = ~ TEST)
+```
+
+The reference sample group is automatically set by alphabetical order. Set the reference to be aerobic.
+```{r}
+dds$TEST <- relevel(dds$TEST, ref = "aerobic")
+```
+# Exploratory Analysis
+## Heatmap 
+Create a heatmap of the count data to visually explore the relationships between the samples.
+```{r}
+# Transform counts for data visualization
+rld <- rlog(dds, blind=TRUE)
+
+# Extract the rlog matrix from the object
+rld_mat <- assay(rld)
+
+# Compute pairwise correlation values
+rld_cor <- cor(rld_mat)
+
+# Plot heatmap
+pheatmap(rld_cor)
+```  
+
+## Principal Component Analysis (PCA)
+```{r fig.width = 12, fig.height=4}
+# Input is a matrix of log transformed values
+pca <- prcomp(t(rld_mat))
+
+# Create data frame with metadata and PC3 and PC4 values for input to ggplot
+df <- cbind(meta, pca$x)
+# PC1 and PC2
+PC1PC2 <- ggplot(df) + geom_point(aes(x=PC1, y=PC2, color = TEST), size = 3) + 
+  scale_color_manual(limits = c("aerobic", "anaerobic", "anaerobic_CRS"), 
+                     values = wes_palette(n=3, name="Darjeeling1"))
+# PC2 and PC3
+PC2PC3 <- ggplot(df) + geom_point(aes(x=PC2, y=PC3, color = TEST), size = 3) + 
+  scale_color_manual(limits = c("aerobic", "anaerobic", "anaerobic_CRS"), 
+                     values = wes_palette(n=3, name="Darjeeling1"))
+# Get legend
+PC.Legend <- get_legend(PC2PC3)
+# Plot together
+plot_grid(PC1PC2 + theme(legend.position = "none"), 
+          PC2PC3 + theme(legend.position = "none"), 
+          PC.Legend,
+          nrow = 1,
+          rel_widths = c(1,1,1)
+)
+```  
+
+It appears the biggest source of variance on the first axis is whether cells were incubated aerobically or anaerobically. I want to look at the third PCA axis to see if variation between anaerobic and anaerobic_CRS samples is captured there.  
+
+In the second and third principal component, we can observe the separation of the anaerobic and anaerobic_crs samples. Imagine PC1 is going into the page and that aerobic samples are still differentiated from these two groups.  
+
+# Differential Expression Analysis
+## Run DESeq2
+```{r}
+# Run DESeq2 differentiol expression analysis
+dds <- DESeq(dds)
+#  **Optional step** - Output normalized counts to save as a file to access outside RStudio
+normalized_counts <- counts(dds, normalized=TRUE)
+```
+## Fit curve to gene-wise dispersion estimates
+The next step in the workflow is to fit a curve to the dispersion estimates for each gene. The idea behind fitting a curve to the data is that different genes will have different scales of biological variability, but, over all genes, there will be a distribution of reasonable estimates of dispersion.
+```{r}
+# Plot dispersion estimates
+plotDispEsts(dds)
+```  
+
+Based on this shrinkage curve it looks like our data is a good fit for the model.
+
+Let's look at the different comparisons that are available to us based on our model:
+```{r}
+resultsNames(dds)
+```
+Output the results for two comparisons: aerobic vs anaerobic and anaerobic_CRS vs anaerobic.  
+Add gene annotation to the results dataframes
+## Results
+### Annotation Source
+```{r echo=FALSE}
+library(AnnotationHub)
+library(annotables)
+```
+
+```{r}
+## Explore the grch38 table loaded by the annotables library
+grch38_df <- data.frame(grch38)
+```
+Use the results function to test DEGs for the anaerobic vs. aerobic comparison.
+
+
+```{r}
+# Output results of Wald test for contrast
+contrastATM <- c("TEST", "anaerobic", "aerobic")
+resATM <- results(dds, contrast = contrastATM)
+resATM <- lfcShrink(dds, contrast = contrastATM, res=resATM, type = "ashr")
+summary(resATM)
+```
+
+Convert results objects into dataframes for plotting and export
+```{r}
+# Turn the results object into a data frame
+resATM_df <- data.frame(resATM) %>%
+  rownames_to_column("ensgene") %>%
+  left_join(grch38_df, by = "ensgene") # Join annotation data to dataframe
+# Save as csv 
+write_csv(resATM_df, "../results/DEresults_anaerobicVSaerobic.csv")
+```
+
+
+```{r}
+# Set filtering parametes for alpha and lfc
+padj.cutoff <- 0.001
+lfc.cutoff <- 1
+# Subset the significant results
+sig_resATM_p001 <- dplyr::filter(resATM_df, padj < 0.001 & abs(log2FoldChange) > lfc.cutoff)
+
+#sig_resCRS <- left_join(x = sig_resCRS, y = grch38_df, by = "ensgene")
+write_csv(sig_resATM_p001, "../results/DEresults_sig_anaVSaer_p001.csv")
+
+```
+# MA Plot
+### Function: Custom MA Plots
+Plot log2FC on the y axis and log2 mean normalized counts on the x-axis.  
+Color is based on the adjusted p-value
+```{r}
+
+makeMA_001 <- function(x){
+  p <- ggmaplot(x, 
+                #fc of 2 corresponds to the log2fc of 1 we tested in our hyp. in the results command
+                fdr = 0.001, 
+                fc = 2, 
+                size = 1, 
+                palette = alpha(c("#2b74e2","#df5f5b", "gray50"),0.35),
+                genenames = as.vector(x$symbol),
+                legend = "top", 
+                top = 20,
+                select.top.method	= "padj",
+                font.label = c(10, "bold", "black"),
+                font.legend = "bold",
+                font.main = "bold",
+                ggtheme = ggplot2::theme_minimal())
+  p
+}
+
+makeMA_001_two <- function(x){
+  p <- ggmaplot(x, 
+                #fc of 2 corresponds to the log2fc of 1 we tested in our hyp. in the results command
+                fdr = 0.001, 
+                fc = 2, 
+                size = 1, 
+                palette = alpha(c("#2b74e2","#df5f5b", "gray50"),0.35),
+                genenames = as.vector(x$symbol),
+                legend = "top", 
+                top = 0,
+                select.top.method	= "fc",
+                label.select = c("SERPINA1", "ANGPTL4", "ICAM1", "TGFB1"),
+              
+                font.label = c(10, "bold", "black"),
+                font.legend = "bold",
+                font.main = "bold",
+                ggtheme = ggplot2::theme_minimal())
+  p
+}
+```  
+
+
+
+## Plots for anaerobic vs aerobic
+```{r}
+
+maPlotATM_001 <- makeMA_001(resATM_df) + ggtitle("Anaerobic vs Aerobic (ref)") +theme(
+    legend.text = element_text(size=rel(0.9)),  
+    legend.title = element_blank(),
+    legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(alpha=0.5, size=3))) +
+  scale_colour_manual(values = alpha(c("#2b74e2","#df5f5b", "gray60"),0.5), labels = c("Upregulated (117)", "Downregulated (31)", "NS"))
+maPlotATM_001
+ggsave(plot = maPlotATM_001, filename = "../figures/anaVSaer/maPlotATM_aerREF_001.pdf", device = "pdf", height = 4, width = 6)
+ggsave(plot = maPlotATM_001, filename = "../figures/anaVSaer/maPlotATM_aerREF_001.png", device = "png", height = 4, width = 6)
+
+maPlotATM_001_sa <- makeMA_001_two(resATM_df) + ggtitle("Anaerobic vs Aerobic (ref)") +theme(
+    legend.text = element_text(size=rel(0.9)),  
+    legend.title = element_blank(),
+    legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(alpha=0.5, size=3))) +
+  scale_colour_manual(values = alpha(c("#2b74e2","#df5f5b", "gray60"),0.5), labels = c("Upregulated (117)", "Downregulated (31)", "NS"))
+maPlotATM_001_sa
+ggsave(plot = maPlotATM_001_sa, filename = "../figures/anaVSaer/maPlotATM_aerREF_001_sa.pdf", device = "pdf", height = 4, width = 6)
+ggsave(plot = maPlotATM_001_sa, filename = "../figures/anaVSaer/maPlotATM_aerREF_001_sa.png", device = "png", height = 4, width = 6)
+```  
+
+
+#Gene Count Plots
+Let's create tibble objects from the meta and normalized_counts data frames before we start plotting. This will enable us to use the tidyverse functionality more easily.
+
+```{r}
+# Create tibbles including row names
+DE_meta <- meta %>% 
+  rownames_to_column(var="SAMPLE_NAME") %>% 
+  as_tibble()
+        
+normalized_counts <- normalized_counts %>% 
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble()
+```
+
+
+Remove CRS samples from normalized counts and Meta data
+```{r}
+norm_counts_atm <- select(normalized_counts, -starts_with("Sample.Anaerobic.CRS"))
+```
+```{r}
+DE_meta_atm <- DE_meta %>% filter(TEST == "anaerobic" | TEST == "aerobic")
+```
+
+Next I want to merge my resATM_df with normalized so that the symbol is also listed with normalized counts
+```{r}
+normalized_resATM <- inner_join(norm_counts_atm, resATM_df, by = c("gene" = "ensgene"))
+view(normalized_resATM)
+```
+The inner_join() will merge 2 data frames with respect to the "ensgene" and "gene" column, i.e. a column with the same column name in both data frames.
+
+Often it is helpful to check the expression of multiple genes of interest at the same time. This often first requires some data wrangling.
+
+We are going to plot the normalized count values for gene groups of interest
+
+```{r}
+#making ploting function (box plot)
+GroupGeneCountsBox <- function(x){
+  ggplot(x, aes(x = symbol, y = normalized_counts, color = TEST)) + 
+  geom_boxplot() +
+  geom_point(position=position_dodge(w = 0.75)) +
+  scale_color_manual(limits = c("aerobic", "anaerobic"), 
+                     values = c("#003F5C","#BC5090")) +
+  scale_y_log10() +
+        xlab("Genes") +
+        ylab("log10 Normalized Counts") +
+        ggtitle("") +
+        theme_bw() +
+	theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+	theme(plot.title = element_text(hjust = 0.5))}
+```
+
+
+Plot the normalized count values for Cytokine Genes
+
+To do this, we first need to list the gene names of interest, then extract normalized count values for those genes.
+```{r}
+#list genes of interest
+cytogenes <- c("ENSG00000125538",
+"ENSG00000115008",
+"ENSG00000136689",
+"ENSG00000136244",
+"ENSG00000110944",
+"ENSG00000169429",
+"ENSG00000169245",
+"ENSG00000156234",
+"ENSG00000189377",
+"ENSG00000198223",
+"ENSG00000232810",
+"ENSG00000163235",
+"ENSG00000105329",
+"ENSG00000109320",
+"ENSG00000090339",
+"ENSG00000171855"
+)
+#normailized counts for those cytokine genes
+cyto_atm_norm <- normalized_resATM %>%
+  filter (gene %in% cytogenes)
+```
+
+Now that we have the normalized counts for each of the genes for all samples, to plot using ggplot(), we need to gather the counts for all samples into a single column to allow us to give ggplot the one column with the values we want it to plot.
+
+The gather() function in the tidyr package will perform this operation and will output the normalized counts for all genes for the first sample listed in the first 11 rows, followed by the normalized counts for second sample in the next 11 rows, so on and so forth.
+
+
+```{r}
+# Gathering the columns to have normalized counts to a single column
+gathered_cyto_atm <- cyto_atm_norm %>%
+  gather(colnames(cyto_atm_norm)[2:12], key = "SAMPLE_NAME", value = "normalized_counts")
+
+## check the column header in the "gathered" data frame
+head(gathered_cyto_atm)
+```
+
+Now, if we want our counts colored by sample group, then we need to combine the metadata information with the melted normalized counts data into the same data frame for input to ggplot():
+```{r}
+gathered_cyto_atm <- inner_join(DE_meta, gathered_cyto_atm, by = c("SAMPLE_NAME" = "SAMPLE_NAME"))
+```
+The inner_join() will merge 2 data frames with respect to the "SAMPLE_NAME" column, i.e. a column with the same column name in both data frames.
+
+Now that we have a data frame in a format that can be utilised by ggplot easily, let's plot!
+
+```{r}
+## plot using GroupGeneCount function
+cyto_plot <- GroupGeneCountsBox(gathered_cyto_atm) + ggtitle("Cyotkine Genes")
+cyto_plot
+```
+
+
+Plot the normalized count values for Mucin Genes
+
+To do this, we first need to list the gene names of interest, then extract normalized count values for those genes.
+```{r}
+#list genes of interest
+mucingenes <- c("ENSG00000185499",
+"ENSG00000145113",
+"ENSG00000169894",
+"ENSG00000173702",
+"ENSG00000184956",
+"ENSG00000215182",
+"ENSG00000117983"
+)
+#normailized counts for those mucin genes
+mucin_atm_norm <- normalized_resATM %>%
+  filter (gene %in% mucingenes)
+```
+
+Now that we have the normalized counts for each of the genes for all samples, to plot using ggplot(), we need to gather the counts for all samples into a single column to allow us to give ggplot the one column with the values we want it to plot.
+
+The gather() function in the tidyr package will perform this operation and will output the normalized counts for all genes for the first sample listed in the first 11 rows, followed by the normalized counts for second sample in the next 11 rows, so on and so forth.
+
+```{r}
+# Gathering the columns to have normalized counts to a single column
+gathered_mucin_atm <- mucin_atm_norm %>%
+  gather(colnames(mucin_atm_norm)[2:12], key = "SAMPLE_NAME", value = "normalized_counts")
+
+## check the column header in the "gathered" data frame
+head(gathered_mucin_atm)
+```
+
+Now, if we want our counts colored by sample group, then we need to combine the metadata information with the melted normalized counts data into the same data frame for input to ggplot():
+```{r}
+gathered_mucin_atm <- inner_join(DE_meta, gathered_mucin_atm, by = c("SAMPLE_NAME" = "SAMPLE_NAME"))
+```
+The inner_join() will merge 2 data frames with respect to the "SAMPLE_NAME" column, i.e. a column with the same column name in both data frames.
+
+Now that we have a data frame in a format that can be utilised by ggplot easily, let's plot!
+
+```{r}
+## plot using GroupGeneCount function
+mucin_plot <- GroupGeneCountsBox(gathered_mucin_atm) + ggtitle("Mucin Genes")
+mucin_plot
+```
+
+
+Plot the normalized count values for HIF1A
+
+To do this, we first need to list the gene names of interest, then extract normalized count values for those genes.
+```{r}
+#list genes of interest
+HIF1A <- "ENSG00000100644"
+#normailized counts for those mucin genes
+hif1a_atm_norm <- normalized_resATM %>%
+  filter (gene %in% HIF1A)
+```
+
+Now that we have the normalized counts for each of the genes for all samples, to plot using ggplot(), we need to gather the counts for all samples into a single column to allow us to give ggplot the one column with the values we want it to plot.
+
+The gather() function in the tidyr package will perform this operation and will output the normalized counts for all genes for the first sample listed in the first 11 rows, followed by the normalized counts for second sample in the next 11 rows, so on and so forth.
+
+```{r}
+# Gathering the columns to have normalized counts to a single column
+gathered_hif1a_atm <- hif1a_atm_norm %>%
+  gather(colnames(hif1a_atm_norm)[2:12], key = "SAMPLE_NAME", value = "normalized_counts")
+
+## check the column header in the "gathered" data frame
+head(gathered_hif1a_atm)
+```
+
+Now, if we want our counts colored by sample group, then we need to combine the metadata information with the melted normalized counts data into the same data frame for input to ggplot():
+```{r}
+gathered_hif1a_atm <- inner_join(DE_meta, gathered_hif1a_atm, by = c("SAMPLE_NAME" = "SAMPLE_NAME"))
+```
+The inner_join() will merge 2 data frames with respect to the "SAMPLE_NAME" column, i.e. a column with the same column name in both data frames.
+
+Now that we have a data frame in a format that can be utilised by ggplot easily, let's plot!
+
+```{r}
+## plot using GroupGeneCount function
+HIF1A_plot <- GroupGeneCountsBox(gathered_hif1a_atm) + ggtitle("HIF1A")
+HIF1A_plot
+```
+
+
+
+
+Plot the normalized count values for LDHA
+
+To do this, we first need to list the gene names of interest, then extract normalized count values for those genes.
+```{r}
+#list genes of interest
+LDHA <- "ENSG00000134333"
+#normailized counts for those mucin genes
+ldha_atm_norm <- normalized_resATM %>%
+  filter (gene %in% LDHA)
+```
+
+Now that we have the normalized counts for each of the genes for all samples, to plot using ggplot(), we need to gather the counts for all samples into a single column to allow us to give ggplot the one column with the values we want it to plot.
+
+The gather() function in the tidyr package will perform this operation and will output the normalized counts for all genes for the first sample listed in the first 11 rows, followed by the normalized counts for second sample in the next 11 rows, so on and so forth.
+
+```{r}
+# Gathering the columns to have normalized counts to a single column
+gathered_ldha_atm <- ldha_atm_norm %>%
+  gather(colnames(ldha_atm_norm)[2:12], key = "SAMPLE_NAME", value = "normalized_counts")
+
+## check the column header in the "gathered" data frame
+head(gathered_ldha_atm)
+```
+
+Now, if we want our counts colored by sample group, then we need to combine the metadata information with the melted normalized counts data into the same data frame for input to ggplot():
+```{r}
+gathered_ldha_atm <- inner_join(DE_meta, gathered_ldha_atm, by = c("SAMPLE_NAME" = "SAMPLE_NAME"))
+```
+The inner_join() will merge 2 data frames with respect to the "SAMPLE_NAME" column, i.e. a column with the same column name in both data frames.
+
+Now that we have a data frame in a format that can be utilised by ggplot easily, let's plot!
+
+```{r}
+## plot using GroupGeneCount function
+ldha_plot <- GroupGeneCountsBox(gathered_ldha_atm) + ggtitle("LDHA")
+ldha_plot
+```
+
+Plot the normalized count values for Chemokines and TNFA1 Genes
+
+To do this, we first need to list the gene names of interest, then extract normalized count values for those genes.
+```{r}
+#list genes of interest
+chemo <- c("ENSG00000163734",
+"ENSG00000163735",
+"ENSG00000163739",
+"ENSG00000109079")
+#normailized counts for those cytokine genes
+chemo_atm_norm <- normalized_resATM %>%
+  filter (gene %in% chemo)
+```
+
+Now that we have the normalized counts for each of the genes for all samples, to plot using ggplot(), we need to gather the counts for all samples into a single column to allow us to give ggplot the one column with the values we want it to plot.
+
+The gather() function in the tidyr package will perform this operation and will output the normalized counts for all genes for the first sample listed in the first 11 rows, followed by the normalized counts for second sample in the next 11 rows, so on and so forth.
+
+
+```{r}
+# Gathering the columns to have normalized counts to a single column
+gathered_chemo_atm <- chemo_atm_norm %>%
+  gather(colnames(chemo_atm_norm)[2:12], key = "SAMPLE_NAME", value = "normalized_counts")
+
+## check the column header in the "gathered" data frame
+head(gathered_chemo_atm)
+```
+
+Now, if we want our counts colored by sample group, then we need to combine the metadata information with the melted normalized counts data into the same data frame for input to ggplot():
+```{r}
+gathered_chemo_atm <- inner_join(DE_meta, gathered_chemo_atm, by = c("SAMPLE_NAME" = "SAMPLE_NAME"))
+```
+The inner_join() will merge 2 data frames with respect to the "SAMPLE_NAME" column, i.e. a column with the same column name in both data frames.
+
+Now that we have a data frame in a format that can be utilised by ggplot easily, let's plot!
+
+```{r}
+## plot using GroupGeneCount function
+chemo_plot <- GroupGeneCountsBox(gathered_chemo_atm) + ggtitle("Chemokine Genes")
+chemo_plot
+```
+
+
+Plot the normalized count values for Upregulated cell stress Genes
+
+To do this, we first need to list the gene names of interest, then extract normalized count values for those genes.
+```{r}
+#list genes of interest
+stress <- c("ENSG00000197249",
+"ENSG00000167772")
+#normailized counts for those cytokine genes
+stress_atm_norm <- normalized_resATM %>%
+  filter (gene %in% stress)
+```
+
+Now that we have the normalized counts for each of the genes for all samples, to plot using ggplot(), we need to gather the counts for all samples into a single column to allow us to give ggplot the one column with the values we want it to plot.
+
+The gather() function in the tidyr package will perform this operation and will output the normalized counts for all genes for the first sample listed in the first 11 rows, followed by the normalized counts for second sample in the next 11 rows, so on and so forth.
+
+
+```{r}
+# Gathering the columns to have normalized counts to a single column
+gathered_stress_atm <- stress_atm_norm %>%
+  gather(colnames(stress_atm_norm)[2:12], key = "SAMPLE_NAME", value = "normalized_counts")
+
+## check the column header in the "gathered" data frame
+head(gathered_stress_atm)
+```
+
+Now, if we want our counts colored by sample group, then we need to combine the metadata information with the melted normalized counts data into the same data frame for input to ggplot():
+```{r}
+gathered_stress_atm <- inner_join(DE_meta, gathered_stress_atm, by = c("SAMPLE_NAME" = "SAMPLE_NAME"))
+```
+The inner_join() will merge 2 data frames with respect to the "SAMPLE_NAME" column, i.e. a column with the same column name in both data frames.
+
+Now that we have a data frame in a format that can be utilised by ggplot easily, let's plot!
+
+```{r}
+## plot using GroupGeneCount function
+stress_plot <- GroupGeneCountsBox(gathered_stress_atm) + ggtitle("Cell Stress Genes")
+stress_plot
+```
+
+
+```{r}
+
+ggsave(stress_plot, filename = "../figures/anaVSaer/stress_norm.pdf", device = "pdf", height = 4, width =6)
+
+ggsave(stress_plot, filename = "../figures/anaVSaer/stress_norm.png", device = "png", height = 4, width =6)
+
+write_csv(gathered_stress_atm, "../results/StressNormCount_anaerobicVSaerobic.csv")
+```
+
+```{r}
+
+ggsave(chemo_plot, filename = "../figures/anaVSaer/chemo_norm.pdf", device = "pdf", height = 4, width =6)
+
+ggsave(chemo_plot, filename = "../figures/anaVSaer/chemo_norm.png", device = "png", height = 4, width =6)
+
+write_csv(gathered_chemo_atm, "../results/ChemoNormCount_anaerobicVSaerobic.csv")
+```
+
+```{r}
+
+ggsave(ldha_plot, filename = "../figures/anaVSaer/LDHA_norm.pdf", device = "pdf", height = 4, width =6)
+
+ggsave(ldha_plot, filename = "../figures/anaVSaer/LDHA_norm.png", device = "png", height = 4, width =6)
+
+write_csv(gathered_ldha_atm, "../results/LdhaNormCount_anaerobicVSaerobic.csv")
+```
+
+```{r}
+ggsave(cyto_plot, filename = "../figures/anaVSaer/cytokine_norm.pdf", device = "pdf", height = 4, width = 6)
+ggsave(mucin_plot, filename = "../figures/anaVSaer/mucin_norm.pdf", device = "pdf", height = 4, width = 6)
+ggsave(HIF1A_plot, filename = "../figures/anaVSaer/HIF1A_norm.pdf", device = "pdf", height = 4, width =6)
+```
+```{r}
+ggsave(cyto_plot, filename = "../figures/anaVSaer/cytokine_norm.png", device = "png", height = 4, width = 6)
+ggsave(mucin_plot, filename = "../figures/anaVSaer/mucin_norm.png", device = "png", height = 4, width = 6)
+ggsave(HIF1A_plot, filename = "../figures/anaVSaer/HIF1A_norm.png", device = "png", height = 4, width =6)
+```
+
+```{r}
+write_csv(gathered_cyto_atm, "../results/CytoNormCount_anaerobicVSaerobic.csv")
+write_csv(gathered_mucin_atm, "../results/MucinNormCount_anaerobicVSaerobic.csv")
+write_csv(gathered_hif1a_atm, "../results/Hif1aNormCount_anaerobicVSaerobic.csv")
+```
+
+
+
+#Volcano Plots
+```{r}
+library(EnhancedVolcano)
+```
+
+
+```{r}
+volcano_atm_001 <- EnhancedVolcano(resATM_df,
+                lab = resATM_df$symbol,
+                x = 'log2FoldChange',
+                y= 'pvalue',
+                xlim = c(-5,5),
+                title = "Anaerobic vs Aerobic",
+                subtitle = "",
+                caption = "",
+                hlineCol = 'black',
+                vlineCol = 'black',
+                colAlpha = 4/5,
+                FCcutoff = 1,
+                pCutoff = 0.001,
+                pointSize = 1.5,
+                labCol = 'black',
+                cutoffLineCol = 'black',
+                border = "full",
+                col = c("grey30", "#EEC537", "#8AC1BE", "#D7462E"),
+                legendPosition = 'none'
+            )
+volcano_atm_001
+```
+
+```{r}
+
+ggsave(volcano_atm_001, filename = "../figures/anaVSaer/volcano_atm_001.pdf", device = "pdf", height = 6, width = 6)
+
+```
+```{r}
+
+ggsave(volcano_atm_001, filename = "../figures/anaVSaer/volcano_atm_001.png", device = "png", height = 6, width = 6)
+
+```
+
+
+Now we want to color the dots in the volcano plot by certain gene groups, first we specify the gene groups
+```{r}
+# Define gene groups
+tightjunction <- c("TJP2", "TJP1", "TJP3", "TJAP1", "CDH1", "OCLN", "CGNL1", "CGN", "SYMPK", "CTNNB1", "SAFB")
+oxstress <- c("GPX1", "GPX8", "SCD","OSGIN1", "OSER1", "OXSR1", "HIF1AN", "HIF1A", "HIF3A", "CTSB", "PRDX3", "NCF2", "NQO1", "NOXO1", "PARK7", "HMOX1", "HMOX2", "NFE2L2")
+erstress <- c("ERN1", "EDEM2", "EDEM1", "EDEM3", "CALM1", "ATF6B", "ATF6", "ERN1", "EIF2AK3", "SREBF1", "CANX", "TRIB3", "DDIT3", "SERP1", "STIP1")
+celldeath <- c("LDHA", "DAPK2", "DAPK3", "BAD", "PDCD6IP", "PDCD2", "PDCD11", "PDCD7", "PDCD2L", "PDCD6", "PDCD4", "FAS", "TRADD", "DAP", "DAD1", "DAP3", "CIDEB", "CIDEC", "CDIP1", "PIDD1", "DEDD2")
+cytokine <- c( "IL6R", "TNFRSF11B", "TRAF6", "TNFRSF10A", "IL1R1", "IL17RB", "IL17RA", "IL18R1", "MAPK15", "MAP3K10", "MAP2K2", "MAP3K3", "MAPK7", "TNFAIP6", "TNFAIP3", "TNFAIP8", "TNFAIP1", "NFKBIA", "TLR1", "TLR9", "TLR4", "TLR5", "TLR2", "TLR3", "IL10RB", "IL10RA")
+mucin <- c("MUC1", "MUC4", "MUC3A", "MUC13", "MUC6", "MUC5AC", "MUC5B")
+
+genegroups <- do.call(c, list(tightjunction, oxstress, erstress, celldeath, cytokine))
+
+```
+
+
+```{r}
+# Load in res_dfATM 
+res_dfATMvolcanogenes <- resATM_df
+
+# Remove rows with l2fc or padj of "NA"
+res_dfATMvolcanogenes <- res_dfATMvolcanogenes[!is.na(res_dfATMvolcanogenes$log2FoldChange), ]
+res_dfATMvolcanogenes <- res_dfATMvolcanogenes[!is.na(res_dfATMvolcanogenes$padj), ]
+
+# Populate a new column with a "1" if gene symbol corresponds to one of the genegroups and a "0" if not. Sort in descending order. When creating the plot, this will allow the genegroup points to be brought to the front and easily seen.
+res_dfATMvolcanogenes %>% mutate(volcanointeger = ifelse(symbol %in% genegroups, 1, 0)) -> res_dfATMvolcanogenes
+res_dfATMvolcanogenes <- res_dfATMvolcanogenes[order(res_dfATMvolcanogenes$volcanointeger),]
+
+# Populate a new column with the gene symbol if l2fc is <-1 or >1 AND padj is <10e-10 (SPRR3 also included because it's visually significant). This makes labeling easier in the volcano plot. 
+res_dfATMvolcanogenes %>% mutate(siggenes = ifelse(((log2FoldChange > 1 | log2FoldChange < -1) & padj < 10e-10) | symbol == "SPRR3" , symbol, "")) -> res_dfATMvolcanogenes
+
+```
+
+
+```{r}
+  # create custom key-value pairs for different cell-types
+  # this can be achieved with nested ifelse statements
+keyvals.colorATM <- 
+  ifelse(res_dfATMvolcanogenes$symbol %in% tightjunction, "magenta", 
+         ifelse(res_dfATMvolcanogenes$symbol %in% oxstress, "cyan2", 
+                ifelse(res_dfATMvolcanogenes$symbol %in% erstress, "blue", 
+                       ifelse(res_dfATMvolcanogenes$symbol %in% celldeath, "gold", 
+                              ifelse(res_dfATMvolcanogenes$symbol %in% cytokine, "red", 
+                                            "grey70")))))#)
+
+  keyvals.colorATM[is.na(keyvals.colorATM)] <- "grey69"
+  names(keyvals.colorATM)[keyvals.colorATM == "grey70"] <- 'Z rest'
+  names(keyvals.colorATM)[keyvals.colorATM == "magenta"] <- 'Tight Junctions'
+  names(keyvals.colorATM)[keyvals.colorATM == "cyan2"] <- 'Oxidative Stress'
+  names(keyvals.colorATM)[keyvals.colorATM == "blue"] <- 'ER Stress'
+  names(keyvals.colorATM)[keyvals.colorATM == "gold"] <- 'Cell Death'
+  names(keyvals.colorATM)[keyvals.colorATM == "red"] <- 'Cytokines'
+```
+
+
+```{r}
+volcano_ATM_group_001 <- EnhancedVolcano(res_dfATMvolcanogenes,
+                lab = res_dfATMvolcanogenes$siggenes,
+                labSize = 3.5,
+                boxedLabels = FALSE,
+                drawConnectors = TRUE,
+                widthConnectors = 0.05,
+                colConnectors = "grey30",
+                typeConnectors = "closed",
+                endsConnectors = "first",
+                lengthConnectors = unit(10e-5, 'npc'),
+                x = 'log2FoldChange',
+                y = 'padj',
+                xlim = c(-4,4),
+                title = NULL,
+                subtitle = "",
+                caption = "",
+                colCustom = keyvals.colorATM,
+                hlineCol = 'black',
+                vlineCol = 'black',
+                colAlpha = 0.5,
+                pointSize = 3,
+                FCcutoff = 1,
+                pCutoff = 0.001,
+                labCol = 'black',
+                cutoffLineCol = 'black',
+                border = "full",
+                legendPosition = "none"
+                )
+volcano_ATM_group_001
+```
+```{r}
+
+ggsave(volcano_ATM_group_001, filename = "../figures/anaVSaer/volcano_atm_group_001.pdf", device = "pdf", height = 6, width = 6)
+```
+```{r}
+
+ggsave(volcano_ATM_group_001, filename = "../figures/anaVSaer/volcano_atm_group_001.png", device = "png", height = 6, width = 6)
+```
+
+```{r}
+sessionInfo()
+```
+
+
+
+
