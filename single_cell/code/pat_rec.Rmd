@@ -1,0 +1,302 @@
+---
+title: "scRNAseq Analysis - Pattern Recognition Genes"
+output: html_notebook
+author: Talia Wiggen
+---
+
+
+# Setup Environment
+```{r}
+# Load libraries
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(Matrix.utils)
+library(edgeR)
+library(dplyr)
+library(magrittr)
+library(Matrix)
+library(purrr)
+library(reshape2)
+library(S4Vectors)
+library(tibble)
+library(SingleCellExperiment)
+library(pheatmap)
+library(apeglm)
+library(png)
+library(DESeq2)
+library(RColorBrewer)
+library(EnhancedVolcano)
+```
+
+# Subset and extract cells
+```{r}
+# Bring in Seurat object
+seurat <- readRDS("../data/seurat/seurat_labelled.rds")
+
+# Remove the fuso cells
+seurat_ana <- subset(seurat, subset = orig.ident != "fuso") 
+
+# Extract raw counts and metadata to create SingleCellExperiment object
+counts <- seurat@assays$RNA@counts 
+counts_ana <- seurat_ana@assays$RNA@counts 
+
+metadata <- seurat@meta.data
+metadata_ana <- seurat_ana@meta.data
+
+# Set up metadata as desired for aggregation and DE analysis
+metadata$cluster_id <- factor(seurat@active.ident)
+
+metadata_ana$cluster_id <- factor(seurat_ana@active.ident)
+
+# Create single cell experiment object
+sce <- SingleCellExperiment(assays = list(counts = counts), 
+                           colData = metadata)
+sce_ana <- SingleCellExperiment(assays = list(counts = counts_ana), 
+                           colData = metadata_ana)
+```
+
+
+
+```{r}
+library("Nebulosa")
+```
+
+```{r}
+tlr1 <- plot_density(seurat, c("TLR1")) + theme(axis.text = element_text(size = 15))
+tlr1
+
+
+
+tlr2 <- plot_density(seurat, c("TLR2")) + theme(axis.text = element_text(size = 15))
+tlr2
+
+
+
+tlr3 <- plot_density(seurat, c("TLR3")) + theme(axis.text = element_text(size = 15))
+tlr3
+
+
+
+tlr4 <- plot_density(seurat, c("TLR4")) + theme(axis.text = element_text(size = 15))
+tlr4
+
+
+
+tlr5 <- plot_density(seurat, c("TLR5")) + theme(axis.text = element_text(size = 15))
+tlr5
+
+
+
+tlr6 <- plot_density(seurat, c("TLR6")) + theme(axis.text = element_text(size = 15))
+tlr6
+
+
+
+tlr9 <- plot_density(seurat, c("TLR9")) + theme(axis.text = element_text(size = 15))
+tlr9
+
+
+
+CD14 <- plot_density(seurat, c("CD14")) + theme(axis.text = element_text(size = 15))
+CD14
+
+
+ggsave(tlr1, filename = "../results/patrec/nebulosa_TLR1.pdf", device = "pdf", height = 4, width = 4)
+ggsave(tlr2, filename = "../results/patrec/nebulosa_TLR2.pdf", device = "pdf", height = 4, width = 4)
+ggsave(tlr3, filename = "../results/patrec/nebulosa_TLR3.pdf", device = "pdf", height = 4, width = 4)
+ggsave(tlr4, filename = "../results/patrec/nebulosa_TLR4.pdf", device = "pdf", height = 4, width = 4)
+ggsave(tlr5, filename = "../results/patrec/nebulosa_TLR5.pdf", device = "pdf", height = 4, width = 4)
+ggsave(tlr6, filename = "../results/patrec/nebulosa_TLR6.pdf", device = "pdf", height = 4, width = 4)
+ggsave(CD14, filename = "../results/patrec/nebulosa_CD14.pdf", device = "pdf", height = 4, width = 4)
+
+```
+
+```{r}
+nod1 <- plot_density(seurat, c("NOD1")) + theme(axis.text = element_text(size = 15))
+nod1
+
+
+nod2 <- plot_density(seurat, c("NOD2")) + theme(axis.text = element_text(size = 15))
+nod2
+
+
+nlrx1 <- plot_density(seurat, c("NLRX1")) + theme(axis.text = element_text(size = 15))
+nlrx1
+
+
+naip <- plot_density(seurat, c("NAIP")) + theme(axis.text = element_text(size = 15))
+naip
+
+
+ciita <- plot_density(seurat, c("CIITA")) + theme(axis.text = element_text(size = 15))
+ciita
+
+
+ggsave(nod1, filename = "../results/patrec/nebulosa_NOD1.pdf", device = "pdf", height = 4, width = 4)
+ggsave(nod2, filename = "../results/patrec/nebulosa_NOD2.pdf", device = "pdf", height = 4, width = 4)
+ggsave(nlrx1, filename = "../results/patrec/nebulosa_NLRX1.pdf", device = "pdf", height = 4, width = 4)
+ggsave(nlrx1, filename = "../results/patrec/nebulosa_NAIP.pdf", device = "pdf", height = 4, width = 4)
+ggsave(ciita, filename = "../results/patrec/nebulosa_CIITA.pdf", device = "pdf", height = 4, width = 4)
+
+```
+
+
+```{r}
+nlrp1 <- plot_density(seurat, c("NLRP1")) + theme(axis.text = element_text(size = 15))
+nlrp1
+
+
+
+nlrp2 <- plot_density(seurat, c("NLRP2")) + theme(axis.text = element_text(size = 15))
+nlrp2
+
+
+nlrp12 <- plot_density(seurat, c("NLRP12")) + theme(axis.text = element_text(size = 15))
+nlrp12
+
+
+ggsave(nlrp1, filename = "../results/patrec/nebulosa_NLRP1.pdf", device = "pdf", height = 4, width = 4)
+ggsave(nlrp2, filename = "../results/patrec/nebulosa_NLRP2.pdf", device = "pdf", height = 4, width = 4)
+ggsave(nlrp12, filename = "../results/patrec/nebulosa_NLRP12.pdf", device = "pdf", height = 4, width = 4)
+```
+```{r}
+zbp1 <- plot_density(seurat, c("ZBP1")) + theme(axis.text = element_text(size = 15))
+zbp1
+
+
+
+aim2 <- plot_density(seurat, c("AIM2")) + theme(axis.text = element_text(size = 15))
+aim2
+
+
+ggsave(zbp1, filename = "../results/patrec/nebulosa_ZBP1.pdf", device = "pdf", height = 4, width = 4)
+ggsave(aim2, filename = "../results/patrec/nebulosa_AIM2.pdf", device = "pdf", height = 4, width = 4)
+
+```
+
+# anaerobic only
+
+
+```{r}
+tlr1 <- plot_density(seurat_ana, c("TLR1")) + theme(axis.text = element_text(size = 15))
+tlr1
+
+
+
+tlr2 <- plot_density(seurat_ana, c("TLR2")) + theme(axis.text = element_text(size = 15))
+tlr2
+
+
+
+tlr3 <- plot_density(seurat_ana, c("TLR3")) + theme(axis.text = element_text(size = 15))
+tlr3
+
+
+
+tlr4 <- plot_density(seurat_ana, c("TLR4")) + theme(axis.text = element_text(size = 15))
+tlr4
+
+
+
+tlr5 <- plot_density(seurat_ana, c("TLR5")) + theme(axis.text = element_text(size = 15))
+tlr5
+
+
+
+tlr6 <- plot_density(seurat_ana, c("TLR6")) + theme(axis.text = element_text(size = 15))
+tlr6
+
+
+
+tlr9 <- plot_density(seurat_ana, c("TLR9")) + theme(axis.text = element_text(size = 15))
+tlr9
+
+
+
+CD14 <- plot_density(seurat_ana, c("CD14")) + theme(axis.text = element_text(size = 15))
+CD14
+
+
+ggsave(tlr1, filename = "../results/patrec/nebulosa_TLR1_ana.pdf", device = "pdf", height = 4, width = 4)
+ggsave(tlr2, filename = "../results/patrec/nebulosa_TLR2_ana.pdf", device = "pdf", height = 4, width = 4)
+ggsave(tlr3, filename = "../results/patrec/nebulosa_TLR3_ana.pdf", device = "pdf", height = 4, width = 4)
+ggsave(tlr4, filename = "../results/patrec/nebulosa_TLR4_ana.pdf", device = "pdf", height = 4, width = 4)
+ggsave(tlr5, filename = "../results/patrec/nebulosa_TLR5_ana.pdf", device = "pdf", height = 4, width = 4)
+ggsave(tlr6, filename = "../results/patrec/nebulosa_TLR6_ana.pdf", device = "pdf", height = 4, width = 4)
+ggsave(CD14, filename = "../results/patrec/nebulosa_CD14_ana.pdf", device = "pdf", height = 4, width = 4)
+
+```
+
+```{r}
+nod1 <- plot_density(seurat_ana, c("NOD1")) + theme(axis.text = element_text(size = 15))
+nod1
+
+
+nod2 <- plot_density(seurat_ana, c("NOD2")) + theme(axis.text = element_text(size = 15))
+nod2
+
+
+nlrx1 <- plot_density(seurat_ana, c("NLRX1")) + theme(axis.text = element_text(size = 15))
+nlrx1
+
+
+naip <- plot_density(seurat_ana, c("NAIP")) + theme(axis.text = element_text(size = 15))
+naip
+
+
+ciita <- plot_density(seurat_ana, c("CIITA")) + theme(axis.text = element_text(size = 15))
+ciita
+```
+
+
+```{r}
+ggsave(nod1, filename = "../results/patrec/nebulosa_NOD1_ana.pdf", device = "pdf", height = 4, width = 4)
+ggsave(nod2, filename = "../results/patrec/nebulosa_NOD2_ana.pdf", device = "pdf", height = 4, width = 4)
+ggsave(nlrx1, filename = "../results/patrec/nebulosa_NLRX1_ana.pdf", device = "pdf", height = 4, width = 4)
+ggsave(nlrx1, filename = "../results/patrec/nebulosa_NAIP_ana.pdf", device = "pdf", height = 4, width = 4)
+ggsave(ciita, filename = "../results/patrec/nebulosa_CIITA_ana.pdf", device = "pdf", height = 4, width = 4)
+
+```
+
+
+```{r}
+nlrp1 <- plot_density(seurat_ana, c("NLRP1")) + theme(axis.text = element_text(size = 15))
+nlrp1
+
+
+
+nlrp2 <- plot_density(seurat_ana, c("NLRP2")) + theme(axis.text = element_text(size = 15))
+nlrp2
+
+
+nlrp12 <- plot_density(seurat_ana, c("NLRP12")) + theme(axis.text = element_text(size = 15))
+nlrp12
+
+
+ggsave(nlrp1, filename = "../results/patrec/nebulosa_NLRP1_ana.pdf", device = "pdf", height = 4, width = 4)
+ggsave(nlrp2, filename = "../results/patrec/nebulosa_NLRP2_ana.pdf", device = "pdf", height = 4, width = 4)
+ggsave(nlrp12, filename = "../results/patrec/nebulosa_NLRP12_ana.pdf", device = "pdf", height = 4, width = 4)
+```
+```{r}
+zbp1 <- plot_density(seurat_ana, c("ZBP1")) + theme(axis.text = element_text(size = 15))
+zbp1
+
+
+
+aim2 <- plot_density(seurat_ana, c("AIM2")) + theme(axis.text = element_text(size = 15))
+aim2
+
+
+ggsave(zbp1, filename = "../results/patrec/nebulosa_ZBP1_ana.pdf", device = "pdf", height = 4, width = 4)
+ggsave(aim2, filename = "../results/patrec/nebulosa_AIM2_ana.pdf", device = "pdf", height = 4, width = 4)
+
+```
+
+
+
+
+
+
+
+

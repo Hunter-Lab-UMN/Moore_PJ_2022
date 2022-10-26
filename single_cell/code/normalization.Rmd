@@ -1,0 +1,164 @@
+---
+title: "scRNAseq Analysis - Normalization"
+output: html_notebook
+author: Talia Wiggen
+---
+# Description
+This notebook is adapted from: https://hbctraining.github.io/scRNA-seq_online/schedule/links-to-lessons.html
+
+The objective of this notebook is to execute the normalization, variance estimation, and identification of the most variable genes. Now that we have our high quality cells, we need to first explore our data and identify any sources of unwanted variation. Then we need to normalize the data, perform variance stabilization and regress out the effects of any covariates that have an effect on our data.
+
+Goals:
+ - To accurately normalize and scale the gene expression values to account for differences in sequencing depth and overdispersed count values.
+ - To identify the most variant genes likely to be indicative of the different cell types present.
+
+Challenges:
+ - Checking and removing unwanted variation so that we do not have cells clustering by artifacts downstream
+
+Recommendations:
+ - Have a good idea of your expectations for the cell types to be present prior to performing the clustering. Know whether you expect cell types of low complexity or higher mitochondrial content AND whether the cells are differentiating
+ - Regress out number of UMIs (default using sctransform), mitochondrial content, and cell cycle, if needed and appropriate for experiment, so not to drive clustering downstream
+
+
+# Setup Environment
+```{r}
+# Load libraries
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(RCurl)
+```
+
+# Load the data
+```{r}
+filtered_seurat <- readRDS("../data/seurat/seurat_filtered.rds")
+```
+
+```{r}
+#check cell counts after filtering
+table(filtered_seurat$orig.ident)
+```
+
+# Explore sources of unwanted variation
+Correction for biological covariates serves to single out particular biological signals of interest, while correcting for technical covariates may be crucial to uncovering the underlying biological signal. The most common biological data correction is to remove the effects of the cell cycle on the transcriptome. This data correction can be performed by a simple linear regression against a cell cycle score which is what we will demonstrate below.
+
+The first step is to explore the data and see if we observe any effects in our data. The raw counts are not comparable between cells and we can’t use them as is for our exploratory analysis. So we will perform a rough normalization by dividing by total counts per cell and taking the natural log. This normalization is solely for the purpose of exploring the sources of variation in our data.
+
+```{r}
+# Normalize the counts
+seurat_phase <- NormalizeData(filtered_seurat)
+```
+
+## Evaluating effects of cell cycle
+To assign each cell a score based on its expression of G2/M and S phase markers, we can use the Seuart function CellCycleScoring(). This function calculates cell cycle phase scores based on canonical markers that required as input.
+
+A list of human cell cycle markers for you in the data folder as an Rdata file called cycle.rda
+```{r}
+# Load cell cycle markers
+load("../data/cycle.rda")
+
+# Score cells for cell cycle
+seurat_phase <- CellCycleScoring(seurat_phase, 
+                                 g2m.features = g2m_genes, 
+                                 s.features = s_genes)
+
+# View cell cycle scores and phases assigned to cells                                 
+View(seurat_phase@meta.data)    
+```
+
+After scoring the cells for cell cycle, we would like to determine whether cell cycle is a major source of variation in our dataset using PCA. To perform PCA, we need to first choose the most variable features, then scale the data. Since highly expressed genes exhibit the highest amount of variation and we don’t want our ‘highly variable genes’ only to reflect high expression, we need to scale the data to scale variation with expression level. The Seurat ScaleData() function will scale the data by:
+ - adjusting the expression of each gene to give a mean expression across cells to be 0
+ - scaling expression of each gene to give a variance across cells to be 1
+```{r}
+# Identify the most variable genes
+seurat_phase <- FindVariableFeatures(seurat_phase, 
+                     selection.method = "vst",
+                     nfeatures = 2000, 
+                     verbose = FALSE)
+		     
+# Scale the counts
+seurat_phase <- ScaleData(seurat_phase)
+```
+
+Now, we can perform the PCA analysis and plot the first two principal components against each other. We also split the figure by cell cycle phase, to evaluate similarities and/or differences. We do not see large differences due to cell cycle phase. Based on this plot, we would not regress out the variation due to cell cycle.
+```{r}
+# Perform PCA
+seurat_phase <- RunPCA(seurat_phase)
+
+# Plot the PCA colored by cell cycle phase
+DimPlot(seurat_phase,
+        reduction = "pca",
+        group.by= "Phase",
+         split.by = "Phase"
+       )
+```
+
+## Evaluating effects of mitochondrial expression
+Mitochondrial expression is another factor which can greatly influence clustering. Oftentimes, it is useful to regress out variation due to mitochondrial expression. However, if the differences in mitochondrial gene expression represent a biological phenomenon that may help to distinguish cell clusters, then we advise not regressing this out. In this exercise, we can perform a quick check similar to looking at cell cycle and decide whether or not we want to regress it out.
+```{r}
+# Check quartile values
+summary(seurat_phase@meta.data$mitoRatio)
+
+# Turn mitoRatio into categorical factor vector based on quartile values
+seurat_phase@meta.data$mitoFr <- cut(seurat_phase@meta.data$mitoRatio, 
+                   breaks=c(-Inf, 0.04872, 0.08145, 0.10657, Inf), 
+                   labels=c("Low","Medium","Medium high", "High"))
+```
+
+```{r}
+# Perform PCA
+seurat_phase <- RunPCA(seurat_phase)
+
+# Plot the PCA colored by cell cycle phase
+DimPlot(seurat_phase,
+        reduction = "pca",
+        group.by= "mitoFr",
+        split.by = "mitoFr")
+```
+
+# Normalization and regression
+The counts of mapped reads for each gene is proportional to the expression of RNA (“interesting”) in addition to many other factors (“uninteresting”). Normalization is the process of scaling raw count values to account for the “uninteresting” factors. In this way the expression levels are more comparable between and/or within cells. The main factors often considered during normalization are:
+ - Sequencing depth: Accounting for sequencing depth is necessary for comparison of gene expression between cells. Each cell in scRNA-seq will have a differing number of reads associated with it. So to accurately compare expression between cells, it is necessary to normalize for sequencing depth.
+ - Gene length: Accounting for gene length is necessary for comparing expression between different genes within the same cell. The number of reads mapped to a longer gene can appear to have equal count/expression as a shorter gene that is more highly expressed. (NOTE: If using a 3’ or 5’ droplet-based method, the length of the gene will not affect the analysis because only the 5’ or 3’ end of the transcript is sequenced. However, if using full-length sequencing, the transcript length should be accounted for.)
+ 
+Now we can use the sctransform method as a more accurate method of normalizing, estimating the variance of the raw filtered data, and identifying the most variable genes. The sctransform method models the UMI counts using a regularized negative binomial model to remove the variation due to sequencing depth (total nUMIs per cell), while adjusting the variance based on pooling information across genes with similar abundances (similar to some bulk RNA-seq methods).
+
+The output of the model (residuals) is the normalized expression levels for each transcript tested.
+
+Sctransform automatically accounts for cellular sequencing depth by regressing out sequencing depth (nUMIs). However, if there are other sources of uninteresting variation identified in the data during the exploration steps we can also include these. 
+
+Since we have three samples in our dataset (from three conditions), we want to keep them as separate objects and transform them as that is what is required for integration. We will first split the cells in seurat_phase object into “Aerobic” and “Anaerobic” and "Fuso-treated":
+```{r}
+# Split seurat object by condition to perform cell cycle scoring and SCT on all samples
+split_seurat <- SplitObject(seurat_phase, split.by = "sample")
+
+split_seurat <- split_seurat[c("ana1", "ana2", "ana3", "ana4", "ana5", "ana6", "fuso1", "fuso2", "fuso3")]
+```
+
+Now we will use a ‘for loop’ to run the SCTransform() on each sample, and regress out mitochondrial expression by specifying in the vars.to.regress argument of the SCTransform() function.
+
+Before we run this for loop, we know that the output can generate large R objects/variables in terms of memory. If we have a large dataset, then we might need to adjust the limit for allowable object sizes within R (Default is 500 * 1024 ^ 2 = 500 Mb) using the following code:
+```{r}
+options(future.globals.maxSize = 4000 * 1024^2)
+```
+
+```{r}
+#SCTransform
+for (i in 1:length(split_seurat)) {
+    split_seurat[[i]] <- SCTransform(split_seurat[[i]], vars.to.regress = c("mitoRatio"))
+}
+
+#NOTE: By default, after normalizing, adjusting the variance, and regressing out uninteresting sources of variation, SCTransform will rank the genes by residual variance and output the 3000 most variant genes. If the dataset has larger cell numbers, then it may be beneficial to adjust this parameter higher using the variable.features.n argument.
+```
+
+```{r}
+# Check which assays are stored in objects
+split_seurat$ana1@assays
+```
+Now we can see that in addition to the raw RNA counts, we now have a SCT component in our assays slot. The most variable features will be the only genes stored inside the SCT assay. As we move through the scRNA-seq analysis, we will choose the most appropriate assay to use for the different steps in the analysis.
+
+
+```{r}
+# Save the split seurat object
+saveRDS(split_seurat, "../data/seurat/split_seurat.rds")
+```
